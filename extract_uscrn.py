@@ -1,7 +1,9 @@
 """
-Extract from USCRN fixed-column text files into pkl files per station across
-years, identify contiguous data sequences having all valid needed data, and
-extract all such data from all stations into a combined pkl file
+Given a directory of USCRN in-situ station data from...
+https://www.ncei.noaa.gov/data/us-climate-reference-network/access/products/
+... extract from USCRN fixed-column text files into pkl files per station
+across years, identify contiguous data sequences having all valid needed data,
+and extract all such data from all stations into a combined pkl file
 """
 import requests
 from pathlib import Path
@@ -10,8 +12,6 @@ from pprint import pprint
 import json
 from datetime import datetime
 import pickle as pkl
-
-base_url = "https://wcc.sc.egov.usda.gov/awdbRestApi/services/v1"
 
 fields = [
         ("wbanno", slice(0,5)), ## station number
@@ -88,14 +88,16 @@ def extract_uscrn_file(text_file:Path, skip_existing=True):
     return values
 
 if __name__=="__main__":
-    proj_root_dir = Path("/Users/mtdodson/desktop/soilm-in-situ")
-    uscrn_file_dir = proj_root_dir.joinpath("uscrn")
-    pkl_dir = proj_root_dir.joinpath("uscrn-pkls-new")
-    combined_pkl_dir = proj_root_dir.joinpath("uscrn-pkls-combined")
-    init_idx_json = proj_root_dir.joinpath("uscrn-valid-init-idxs_24hr.json")
+    #proj_root_dir = Path("/Users/mtdodson/desktop/soilm-in-situ")
+    proj_root_dir = Path("/rhome/mdodson/soil-in-situ")
+    uscrn_file_dir = proj_root_dir.joinpath("data/uscrn/uscrn-txtfiles")
+    pkl_dir = proj_root_dir.joinpath("data/uscrn/uscrn-pkls")
+    combined_pkl_dir = proj_root_dir.joinpath("data/uscrn/uscrn-pkls-combined")
+    init_idx_json = proj_root_dir.joinpath(
+            "data/uscrn-valid-init-idxs_48hr.json")
     skip_existing = False
-    contiguous_window_min_size = 24 ## must have 24 contiguous hours
-    min_spacing_hours = 7
+    contiguous_window_min_size = 48 ## must have this number contiguous hours
+    min_spacing_hours = 17 ## sample start times must be separated
 
     ## extract pkls from text files
     '''
@@ -114,7 +116,7 @@ if __name__=="__main__":
             print(e)
     '''
 
-    ## combine pickles per locale
+    ## combine pickles across years per locale
     '''
     pkl_paths = list(pkl_dir.iterdir())
     pdict = {}
@@ -153,7 +155,8 @@ if __name__=="__main__":
             print(f"Generated: {new_pkl_path.as_posix()}")
     '''
 
-    ## identify contiguous strings of entirely valid data
+    ## identify contiguous strings of entirely valid data and save their
+    ## initial indices in a JSON
     cwdw = contiguous_window_min_size
     '''
     fkeys = [f[0] for f in fields]
@@ -177,7 +180,9 @@ if __name__=="__main__":
     json.dump(valid_init_ixs, init_idx_json.open("w"))
     '''
 
-    ## Extract valid sequences to time series (N,W,F) for each station
+    ## Extract valid sequences to time series samples padded by a provided
+    ## minimum number of hours and concatenate them all in a single sample pkl.
+    #'''
     valid_init_ixs = json.load(init_idx_json.open("r"))
     cpkl_names = list(valid_init_ixs.keys())
     strdata = []
@@ -204,9 +209,8 @@ if __name__=="__main__":
         tmp_sflag = []
         for s in svixs:
             tmp_fdata.append(np.stack([pd[fk][s] for fk in fkeys], axis=-1))
-            tmp_times.append([
-                    datetime.fromtimestamp(t) for t in pd["utc-datetime"][s]
-                    ])
+            tmp_times.append([datetime.fromtimestamp(t)
+                for t in pd["utc-datetime"][s]])
             tmp_strdata = list(zip(*[pd[sk][s] for sk in str_fields]))
             tmp_sflag.append(np.full(s.stop-s.start, pi))
 
@@ -214,6 +218,8 @@ if __name__=="__main__":
         times.append(np.stack(tmp_times, axis=0)) ## (N, W)
         strdata.append(tmp_strdata) ## (N, W, Fs)
         sflag.append(tmp_sflag) ## (N,)
+        print(f"Extracted {len(tmp_fdata)} samples from {pk}")
+
     fdata = np.concatenate(fdata, axis=0)
     times = np.concatenate(times, axis=0)
     sflag = np.concatenate(sflag, axis=0)
@@ -221,5 +227,6 @@ if __name__=="__main__":
     labels = (fkeys, str_fields, cpkl_names)
     data = (fdata, strdata, sflag, times)
     pkl_path = proj_root_dir.joinpath(
-            f"uscrn_samples_{cwdw}h_{min_spacing_hours}p.pkl")
+            f"data/uscrn_samples_{cwdw}h_{min_spacing_hours}p.pkl")
     pkl.dump((labels,data), pkl_path.open("wb"))
+    #'''

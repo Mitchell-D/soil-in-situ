@@ -1,4 +1,7 @@
-
+"""
+Acquire SCAN data from USDA's REST API and store each station's data as a
+separate pkl file alongside quality flags and feature information
+"""
 import requests
 from pathlib import Path
 import numpy as np
@@ -131,7 +134,7 @@ if __name__=="__main__":
     for k in extract_feats:
         print(f"{k:12} : {dmenu['feats'][k]['name']}")
 
-    ## filter for
+    ## filter for SCAN stations only and
     scan = []
     for s in smenu.keys():
         if smenu[s]["networkCode"] == "SCAN":
