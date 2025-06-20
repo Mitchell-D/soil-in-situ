@@ -29,8 +29,10 @@
 ###SBATCH -e /rhome/mdodson/soil-in-situ/slurm/out/slurm_extract_uscrn-48h.err # STDERR
 ###SBATCH -o /rhome/mdodson/soil-in-situ/slurm/out/slurm_extract_scan-48h.out # STDOUT
 ###SBATCH -e /rhome/mdodson/soil-in-situ/slurm/out/slurm_extract_scan-48h.err # STDERR
-#SBATCH -o /rhome/mdodson/soil-in-situ/slurm/out/slurm_extract_ismn.out # STDOUT
-#SBATCH -e /rhome/mdodson/soil-in-situ/slurm/out/slurm_extract_ismn.err # STDERR
+###SBATCH -o /rhome/mdodson/soil-in-situ/slurm/out/slurm_extract_ismn.out # STDOUT
+###SBATCH -e /rhome/mdodson/soil-in-situ/slurm/out/slurm_extract_ismn.err # STDERR
+#SBATCH -o /rhome/mdodson/soil-in-situ/slurm/out/slurm_extract_test.out # STDOUT
+#SBATCH -e /rhome/mdodson/soil-in-situ/slurm/out/slurm_extract_test.err # STDERR
 
 cd /rhome/mdodson/soil-in-situ
 

@@ -4,8 +4,142 @@ import numpy as np
 import json
 from datetime import datetime,timedelta
 import pickle as pkl
+from multiprocessing import Pool
 
 from ismn.interface import ISMN_Interface as ISMN
+
+def _mp_preproc_station_data(args):
+    return _preprocess_station_data(**args)
+
+def _preprocess_station_data(station_dict:dict, var_mapping:dict,
+        station_pkl_dir:Path):
+    """
+    for each station, make a dict containing all information for each sensor,
+    including parsed value and flag data, and store it in a pkl file
+    """
+    stn = station_dict
+    ssr_dict = {}
+    for ssr in stn["sensors"]:
+        cur_var = var_mapping[ssr["variable"]]
+        if cur_var not in ssr_dict.keys():
+            ssr_dict[cur_var] = []
+        ## combine sensor meta dict and parsed sensor data
+        ssr_dict[cur_var].append({
+            **ssr,
+            **{k:v for k,v in zip(
+                ["header", "values", "flags", "datetimes", "etimes"],
+                parse_ismn_stm(
+                    stm_path=ismn_stations_path.joinpath(ssr["file"]),
+                    return_epoch_times=True,
+                    debug=False,
+                    ))
+                },
+            })
+    ## Determine the universal minimum and maximum time for all sensors
+    print(stn["network"], stn["station"])
+    min_times, max_times = [],[]
+    for vk in ssr_dict.keys():
+        for ssr in ssr_dict[vk]:
+            min_times.append(min(ssr["datetimes"]))
+            max_times.append(max(ssr["datetimes"]))
+    tmin,tmax = min(min_times),max(max_times)
+
+    ## Create a dict mapping each hourly time to a unique index
+    t,ix_fulltime = tmin,0
+    all_times = {}
+    while t <= tmax:
+        all_times[t.strftime("%Y%m%d%H")] = ix_fulltime
+        ix_fulltime += 1
+        t += timedelta(hours=1)
+
+    ## make a dict of consistent-time arrays of data and flags per sensor
+    duplicates = {}
+    data_dict = {}
+    for vk in ssr_dict.keys():
+        data_dict[vk] = []
+        for ix_ssr,ssr in enumerate(ssr_dict[vk]):
+            #hdict,vals,datetimes,etimes = ssr["data"]
+            vals = ssr["values"]
+            datetimes = ssr["datetimes"]
+            ismn_flags,src_flags = ssr["flags"]
+            tmp_array = np.full(ix_fulltime+1, np.nan)
+            tmp_iflags = np.full(ix_fulltime+1, "-")
+            if src_flags is None:
+                tmp_sflags = None
+            else:
+                tmp_sflags = np.full(ix_fulltime+1, "-")
+            for i,(v,t) in enumerate(zip(vals,datetimes)):
+                tk = t.strftime("%Y%m%d%H")
+                if np.isfinite(tmp_array[all_times[tk]]):
+                    if vk not in duplicates.keys():
+                        duplicates[vk] = {}
+                    duplicates[vk][ix_ssr] = all_times[tk]
+                tmp_array[all_times[tk]] = v
+                tmp_iflags[all_times[tk]] = ismn_flags[i]
+                if not src_flags is None:
+                    tmp_sflags[all_times[tk]] = src_flags[i]
+            data_dict[vk].append((tmp_array, (ismn_flags,src_flags)))
+
+    ## collect all depths and sensors per depth into a single dict
+    adata = []
+    alabels = []
+    amasks = []
+    adepths = []
+    aduplicates = []
+    sensors = {}
+    times = list(sorted(all_times.keys()))
+    for vk in ssr_dict.keys():
+        ssr_combos = []
+        valid_depths = set(tuple(ssr["depth"]) for ssr in ssr_dict[vk])
+        depths_dict = {d:[
+            (six,ssr) for six,ssr in enumerate(ssr_dict[vk])
+            if tuple(ssr["depth"])==d
+            ] for d in valid_depths}
+        ## sort by depths
+        for dix,(depth,depth_members) in enumerate(sorted(
+                depths_dict.items(), key=lambda s:s[0])):
+            ## sort by instrument name per depth
+            depth_members = list(sorted(
+                depth_members, key=lambda d:d[1]["instrument"]
+                ))
+            adepths.append(depth)
+            for nix,(six,ssr) in enumerate(depth_members):
+                skey = f"{vk}_{dix:02}_{nix:02}"
+                alabels.append(skey)
+                adata.append(data_dict[vk][six][0])
+                amasks.append(data_dict[vk][six][1])
+                sensors[skey] = stn["sensors"][six]
+                if vk in duplicates.keys():
+                    if six in duplicates[vk].keys():
+                        aduplicates.append(duplicates[vk][six])
+
+    network_name = stn["network"].replace(".","")
+    station_name = stn["station"].replace(".","")
+    station_pkl_dict = {
+            ## string network and station ID
+            "network":network_name,
+            "station":station_name,
+            ## dict of file, depth, etc info on each sensor
+            "sensors":sensors,
+            ## soil, climate, etc meta-info on the station
+            "station_meta":stn["station_meta"],
+            ## (lat, lon, elevation) of the station
+            "location":stn["location"],
+            ## all valid depths ordered by the sensor labels' second field
+            "depths":adepths,
+            ## YYYYMMDDHH times associated with the first axis of data
+            "times":times,
+            ## all ordered according to the sensor labels labels
+            "labels":alabels,
+            "data":np.stack(adata, axis=-1),
+            "masks":amasks,
+            "duplicate_times":aduplicates,
+            }
+    print(network_name, station_name, alabels)
+    pkl_path = station_pkl_dir.joinpath(
+            f"station_{network_name}_{station_name}.pkl")
+    pkl.dump(station_pkl_dict, pkl_path.open("wb"))
+    return pkl_path
 
 def parse_ismn_stm(stm_path:Path, return_epoch_times=False, debug=False):
     """
@@ -47,6 +181,7 @@ def parse_ismn_stm(stm_path:Path, return_epoch_times=False, debug=False):
         flags_ismn,flags_provider = flags
     elif len(flags) == 1:
         flags_ismn = flags
+        flags_provider = None
     else:
         raise ValueError(f"Why are there more than 3 flag columns? >:(", flags)
 
@@ -63,7 +198,8 @@ def parse_ismn_stm(stm_path:Path, return_epoch_times=False, debug=False):
     ## convert values to a float array
     values = np.asarray([float(v) for v in values])
 
-    return [hdict,values,datetimes] + [[],[etimes]][return_epoch_times]
+    return [hdict,values,(flags_ismn,flags_provider),datetimes] + \
+            [[],[etimes]][return_epoch_times]
 
 if __name__=="__main__":
     #proj_root_dir = Path("/Users/mtdodson/desktop/soilm-in-situ")
@@ -71,6 +207,7 @@ if __name__=="__main__":
     proj_data_dir = Path("/rstor/mdodson/in-situ/ismn")
     ismn_stations_path = proj_data_dir.joinpath("station-data")
     ismn_available_json = proj_root_dir.joinpath("data/ismn-datamenu.json")
+    station_pkl_dir = proj_data_dir.joinpath("station-pkls")
 
     ## subset of sensor networks to utilize
     extract_networks = ["TxSON", "SOILSCAPE", "SNOTEL", "SCAN", "RISMA",
@@ -119,10 +256,15 @@ if __name__=="__main__":
     json.dump(ismn_dm, ismn_available_json.open("w"), indent=2)
     '''
 
+    ## fix each station's data to a consistent time range/interval and store
+    ## the data in a pkl file alongside its metadata
+    #'''
+    ## Collect a list of station dicts alsongside network and station info
     ismn_dm = json.load(ismn_available_json.open("r"))
-    variables = set()
     stations = []
     for ntw in ismn_dm.keys():
+        if ntw not in extract_networks:
+            continue
         for stn in ismn_dm[ntw].keys():
             stations.append({
                 "network":ntw,
@@ -132,46 +274,13 @@ if __name__=="__main__":
                 "station_meta":ismn_dm[ntw][stn]["station_meta"]
                 })
 
-    for stn in stations:
-        data = {}
-        for ssr in stn["sensors"]:
-            cur_var = var_mapping[ssr["variable"]]
-            if cur_var not in data.keys():
-                data[cur_var] = []
-            data[cur_var].append({
-                **ssr,
-                "data":parse_ismn_stm(
-                    stm_path=ismn_stations_path.joinpath(ssr["file"]),
-                    return_epoch_times=True,
-                    debug=False,
-                    )
-                })
-        print()
-        print(stn["network"], stn["station"])
-        unq_times = set()
-        for vk in data.keys():
-            for ssr in data[vk]:
-                _,vals,datetimes,etimes = ssr["data"]
-                unq_times.update(set(datetimes))
-            ## strangely common to have skipped and doubled hourly timesteps
-            ## separated by 3205 hours exactly
-            '''
-            dt = np.diff(etimes)
-            m_dt_under = dt<3599
-            m_dt_over = dt>3601
-            print(k, vals.size, np.count_nonzero(m_dt_under),
-                    np.count_nonzero(m_dt_over))
-            print(np.where(m_dt_under)[0])
-            print(np.where(m_dt_over)[0])
-            if np.count_nonzero(m_dt_under) == np.count_nonzero(m_dt_over)+1:
-                print(np.where(m_dt_over)[0]-np.where(m_dt_under)[0][1:])
-            if np.count_nonzero(m_dt_under) == np.count_nonzero(m_dt_over):
-                print(np.where(m_dt_over)[0]-np.where(m_dt_under)[0])
-            print()
-            '''
-
-        unq_times = sorted(list(unq_times))
-        print(len(unq_times), unq_times[0], unq_times[-1])
-        for t0,tf in zip(unq_times[:-1],unq_times[1:]):
-            if abs((tf-t0).seconds)-3600 > 60:
-                print(t0)
+    args = [{
+        "station_dict":s,
+        "var_mapping":var_mapping,
+        "station_pkl_dir":station_pkl_dir,
+        } for s in stations
+        ]
+    nworkers = 15
+    with Pool(nworkers) as pool:
+        for ppath in pool.imap_unordered(_mp_preproc_station_data, args):
+            print(f"generated {ppath.name}")
