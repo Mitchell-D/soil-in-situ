@@ -12,12 +12,23 @@ def _mp_preproc_station_data(args):
     return _preprocess_station_data(**args)
 
 def _preprocess_station_data(station_dict:dict, var_mapping:dict,
-        station_pkl_dir:Path):
+        station_pkl_dir:Path, skip_existing=True):
     """
     for each station, make a dict containing all information for each sensor,
     including parsed value and flag data, and store it in a pkl file
     """
     stn = station_dict
+    network_name = stn["network"].replace(".","")
+    station_name = stn["station"].replace(".","")
+    pkl_path = station_pkl_dir.joinpath(
+            f"station_{network_name}_{station_name}.pkl")
+    if pkl_path.exists():
+        if skip_existing:
+            print(f"Skipping {pkl_path.name}")
+            return pkl_path
+        else:
+            print(f"Overwriting {pkl_path.name}")
+
     ssr_dict = {}
     for ssr in stn["sensors"]:
         cur_var = var_mapping[ssr["variable"]]
@@ -78,7 +89,7 @@ def _preprocess_station_data(station_dict:dict, var_mapping:dict,
                 tmp_iflags[all_times[tk]] = ismn_flags[i]
                 if not src_flags is None:
                     tmp_sflags[all_times[tk]] = src_flags[i]
-            data_dict[vk].append((tmp_array, (ismn_flags,src_flags)))
+            data_dict[vk].append((tmp_array, (tmp_iflags,tmp_sflags)))
 
     ## collect all depths and sensors per depth into a single dict
     adata = []
@@ -113,8 +124,6 @@ def _preprocess_station_data(station_dict:dict, var_mapping:dict,
                     if six in duplicates[vk].keys():
                         aduplicates.append(duplicates[vk][six])
 
-    network_name = stn["network"].replace(".","")
-    station_name = stn["station"].replace(".","")
     station_pkl_dict = {
             ## string network and station ID
             "network":network_name,
@@ -123,6 +132,16 @@ def _preprocess_station_data(station_dict:dict, var_mapping:dict,
             "sensors":sensors,
             ## soil, climate, etc meta-info on the station
             "station_meta":stn["station_meta"],
+            "texture":np.stack([
+                np.array(stn["station_meta"].get("sand_fraction",
+                    np.full(3, np.nan))),
+                np.array(stn["station_meta"].get("silt_fraction",
+                    np.full(3, np.nan))),
+                np.array(stn["station_meta"].get("clay_fraction",
+                    np.full(3, np.nan))),
+                ], axis=-1),
+            "climate":stn["station_meta"].get("climate_KG"),
+            "saturation":stn["station_meta"].get("saturation"),
             ## (lat, lon, elevation) of the station
             "location":stn["location"],
             ## all valid depths ordered by the sensor labels' second field
@@ -135,7 +154,11 @@ def _preprocess_station_data(station_dict:dict, var_mapping:dict,
             "masks":amasks,
             "duplicate_times":aduplicates,
             }
-    print(network_name, station_name, alabels)
+    print(network_name, station_name,
+            station_pkl_dict["data"].shape,
+            station_pkl_dict["texture"].shape,
+            station_pkl_dict["texture"].dtype,
+            len(station_pkl_dict["depths"]))
     pkl_path = station_pkl_dir.joinpath(
             f"station_{network_name}_{station_name}.pkl")
     pkl.dump(station_pkl_dict, pkl_path.open("wb"))
@@ -223,7 +246,7 @@ if __name__=="__main__":
             "saturation", "climate_KG", "climate_insitu", "elevation",
             "instrument", "organic_carbon"]
 
-    ## Load the metadata via the interface tool
+    ## Load the metadata via the interface tool and store meta info in json
     '''
     interface = ISMN(
             ismn_stations_path,
@@ -278,9 +301,28 @@ if __name__=="__main__":
         "station_dict":s,
         "var_mapping":var_mapping,
         "station_pkl_dir":station_pkl_dir,
+        "skip_existing":True,
         } for s in stations
         ]
     nworkers = 15
     with Pool(nworkers) as pool:
         for ppath in pool.imap_unordered(_mp_preproc_station_data, args):
             print(f"generated {ppath.name}")
+    #'''
+
+    for ppath in station_pkl_dir.iterdir():
+        with ppath.open("rb") as fp:
+            sdict = pkl.load(fp)
+            print()
+            print(sdict["network"], sdict["station"], sdict["data"].shape)
+            print(len(sdict["masks"]), len(sdict["labels"]))
+            m_all_valid = np.all(np.stack([
+                np.where(np.array(flags[0])=="G", True, False)
+                for flags in sdict["masks"]
+                ], axis=-1), axis=-1)
+            print(m_all_valid.shape, np.count_nonzero(m_all_valid))
+            print(sdict["masks"])
+            exit(0)
+            #print(list(map(np.unique, sdict["masks"])))
+            #print(list(sdict["station_meta"].keys()))
+            #print(sdict["labels"])
