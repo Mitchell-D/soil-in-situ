@@ -1,4 +1,5 @@
-""" """
+"""
+"""
 from pathlib import Path
 import numpy as np
 import json
@@ -11,7 +12,8 @@ from ismn.interface import ISMN_Interface as ISMN
 def _mp_preproc_station_data(args):
     return _preprocess_station_data(**args)
 
-def _preprocess_station_data(station_dict:dict, var_mapping:dict,
+def _preprocess_station_data(
+        station_root_path:Path, station_dict:dict, var_mapping:dict,
         station_pkl_dir:Path, skip_existing=True):
     """
     for each station, make a dict containing all information for each sensor,
@@ -40,7 +42,7 @@ def _preprocess_station_data(station_dict:dict, var_mapping:dict,
             **{k:v for k,v in zip(
                 ["header", "values", "flags", "datetimes", "etimes"],
                 parse_ismn_stm(
-                    stm_path=ismn_stations_path.joinpath(ssr["file"]),
+                    stm_path=station_root_path.joinpath(ssr["file"]),
                     return_epoch_times=True,
                     debug=False,
                     ))
@@ -225,34 +227,44 @@ def parse_ismn_stm(stm_path:Path, return_epoch_times=False, debug=False):
             [[],[etimes]][return_epoch_times]
 
 if __name__=="__main__":
-    #proj_root_dir = Path("/Users/mtdodson/desktop/soilm-in-situ")
+    ## base project directory
     proj_root_dir = Path("/rhome/mdodson/soil-in-situ")
-    proj_data_dir = Path("/rstor/mdodson/in-situ/ismn")
-    ismn_stations_path = proj_data_dir.joinpath("station-data")
+    ## JSON path where available network information will be stored
     ismn_available_json = proj_root_dir.joinpath("data/ismn-datamenu.json")
-    station_pkl_dir = proj_data_dir.joinpath("station-pkls")
+    ## directory where already downloaded & unzipped ISMN data is stored
+    ismn_stations_path = Path("/rgroup/watershed/COMMON_DATASETS/ISMN/")
+    ## directory where station pickle files will be generated
+    station_pkl_dir = Path("./data/station-pkls")
+
+    #meta_json_path = proj_root_dir.joinpath("data/ismn_meta")
+    #temp_dir = proj_root_dir.joinpath("ismn_tmp")
 
     ## subset of sensor networks to utilize
     extract_networks = ["TxSON", "SOILSCAPE", "SNOTEL", "SCAN", "RISMA",
             "FLUXNET-AMERIFLUX", "CW3E", "ARM"]
+
     ## mapping to variable shorthand
     var_mapping = {
-            "snow_depth":"snod", "surface_temperature":"tsfc",
-            "precipitation":"prcp", "soil_temperature":"tsoil",
-            "air_temperature":"tair", "soil_moisture":"soilm",
-            "snow_water_equivalent":"swe",
-            }
+        "snow_depth":"snod",
+        "surface_temperature":"tsfc",
+        "precipitation":"prcp",
+        "soil_temperature":"tsoil",
+        "air_temperature":"tair",
+        "soil_moisture":"soilm",
+        "snow_water_equivalent":"swe",
+        }
+
     keep_meta = ["clay_fraction", "sand_fraction", "silt_fraction",
             "saturation", "climate_KG", "climate_insitu", "elevation",
             "instrument", "organic_carbon"]
 
     ## Load the metadata via the interface tool and store meta info in json
-    '''
+    #'''
     interface = ISMN(
             ismn_stations_path,
             parallel=True,
-            meta_path=proj_root_dir.joinpath("data/ismn_meta"),
-            temp_root=proj_root_dir.joinpath("ismn_tmp")
+            #meta_path=proj_root_dir.joinpath("data/ismn_meta"),
+            #temp_root=proj_root_dir.joinpath("ismn_tmp")
             )
 
     ismn_dm = {}
@@ -277,7 +289,7 @@ if __name__=="__main__":
                         ]
                     }
     json.dump(ismn_dm, ismn_available_json.open("w"), indent=2)
-    '''
+    #'''
 
     ## fix each station's data to a consistent time range/interval and store
     ## the data in a pkl file alongside its metadata
@@ -315,14 +327,14 @@ if __name__=="__main__":
             sdict = pkl.load(fp)
             print()
             print(sdict["network"], sdict["station"], sdict["data"].shape)
-            print(len(sdict["masks"]), len(sdict["labels"]))
+
             m_all_valid = np.all(np.stack([
                 np.where(np.array(flags[0])=="G", True, False)
                 for flags in sdict["masks"]
                 ], axis=-1), axis=-1)
             print(m_all_valid.shape, np.count_nonzero(m_all_valid))
-            print(sdict["masks"])
-            exit(0)
+
+            #print(sdict["masks"])
             #print(list(map(np.unique, sdict["masks"])))
             #print(list(sdict["station_meta"].keys()))
             #print(sdict["labels"])
